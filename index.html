@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RizenAi Content Repurposer - Mason Mk1 (v6)</title>
+    <title>RizenAi Content Repurposer - Mason Mk1 (v7)</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -256,8 +256,10 @@
                     app = initializeApp(firebaseConfig);
                     db = getFirestore(app);
                     auth = getAuth(app);
+                    // Use setLogLevel('error') to avoid excessive logs unless needed for specific Firestore debugging
                     setLogLevel('error'); 
 
+                    // Check if initialAuthToken is defined before trying to sign in
                     if (initialAuthToken) {
                         await signInWithCustomToken(auth, initialAuthToken);
                     } else {
@@ -265,6 +267,7 @@
                     }
                 }
             } catch (error) {
+                // Log Firebase errors but allow the rest of the application to proceed
                 console.error("Firebase Initialization or Auth Failed:", error);
             }
         }
@@ -356,7 +359,8 @@
             const payload = {
                 contents: [{ parts: [{ text: userQuery }] }],
                 systemInstruction: { parts: [{ text: systemInstruction }] },
-                tools: [{ "google_search": {} }],
+                // Use Google Search grounding for Phase 1 analysis
+                tools: [{ "google_search": {} }], 
                 generationConfig: {
                     responseMimeType: "application/json",
                     responseSchema: {
@@ -386,16 +390,24 @@
                         body: JSON.stringify(payload)
                     });
                     
-                    updateStatus("Analyzing Trends & Prepping the Content Blueprint...", true);
-
+                    // --- DEBUGGING LOGIC START ---
                     if (!response.ok) {
+                        const errorBody = await response.text();
+                        console.error(`Attempt ${i + 1}: API call failed. Status: ${response.status}. Body:`, errorBody);
+
                         if (response.status === 429 && i < maxRetries - 1) { 
+                            // Throttling detected, retry
                             await new Promise(resolve => setTimeout(resolve, delay));
                             delay *= 2; 
                             continue;
                         }
-                        throw new Error(`API call failed with status: ${response.status}`);
+                        // Non-retryable error (400, 401, 500, etc.)
+                        throw new Error(`API call failed with status: ${response.status} - ${response.statusText}. See console for details.`);
                     }
+                    // --- DEBUGGING LOGIC END ---
+
+
+                    updateStatus("Analyzing Trends & Prepping the Content Blueprint...", true);
 
                     const result = await response.json();
                     
@@ -405,6 +417,8 @@
                     
                     const textPart = result?.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (!textPart) {
+                        // Log the full response for deeper inspection
+                        console.error("API response was missing content or structured text. Full result:", result);
                         throw new Error("API response was missing content or structured text.");
                     }
                     
@@ -413,13 +427,23 @@
                     return parsedResults;
 
                 } catch (error) {
-                    console.error(`Attempt ${i + 1} failed:`, error);
-                    if (i === maxRetries - 1) throw error;
+                    // Log the error for the developer (you/me)
+                    console.error(`Content Repurposing Error:`, error);
+                    if (i === maxRetries - 1) {
+                         // Throw the error only on the last failed attempt
+                        throw error;
+                    }
+                    // For non-retryable errors, we exit the loop early to avoid unnecessary delays
+                    if (error.message.includes('API call failed with status')) {
+                         throw error;
+                    }
+                    // Wait and retry for network/unknown errors
                     await new Promise(resolve => setTimeout(resolve, delay));
                     delay *= 2;
                 }
             }
-            throw new Error("Failed to fetch content after multiple retries.");
+            // Should be unreachable due to explicit throw in the loop, but kept for completeness.
+            throw new Error("Failed to fetch content after multiple retries."); 
         }
 
         function renderResults(results) {
@@ -529,12 +553,19 @@
                     const results = await fetchContent(data);
                     renderResults(results);
                 } catch (error) {
-                    console.error("Content Repurposing Error:", error);
-                    // Check if it's a JSON parse error (often indicates a non-JSON response from API)
+                    // Log to console for debugging
+                    console.error("Final Content Repurposing Error (Caught):", error.message);
+                    
+                    // Display a user-friendly error message
                     let errorMsg = error.message;
-                    if (errorMsg.includes('Unexpected token')) {
-                         errorMsg = "Critical failure in API response parsing (expected JSON). Try reducing complexity or check inputs.";
+                    if (errorMsg.includes('JSON')) {
+                         errorMsg = "API returned an unexpected format. Please try again or check inputs.";
+                    } else if (errorMsg.includes('status: 401')) {
+                         errorMsg = "Authentication failed. The API key is likely missing or invalid.";
+                    } else if (errorMsg.includes('status: 400')) {
+                         errorMsg = "Bad Request. API requires valid input fields (Name/Profession/Content).";
                     }
+                    
                     showMessage(`System Error: ${errorMsg}`, true);
                     updateStatus("Failed to Generate Content.", false);
                 }
